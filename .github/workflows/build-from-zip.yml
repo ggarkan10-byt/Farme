@@ -1,1 +1,78 @@
+name: Build Farm World APK from ZIP
 
+on:
+  workflow_dispatch:
+  push:
+    paths:
+      - "project.zip"
+      - ".github/workflows/build-from-zip.yml"
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Set up Java
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "17"
+
+      - name: Set up Flutter
+        uses: subosito/flutter-action@v2
+        with:
+          channel: stable
+          cache: true
+
+      - name: Extract project ZIP
+        run: |
+          test -f project.zip || { echo "project.zip was not found in the repository root"; exit 1; }
+          mkdir -p extracted
+          unzip -q project.zip -d extracted
+          if [ -f extracted/pubspec.yaml ]; then
+            PROJECT_DIR="extracted"
+          elif [ -f extracted/farm_world_mobile/pubspec.yaml ]; then
+            PROJECT_DIR="extracted/farm_world_mobile"
+          else
+            PROJECT_DIR="$(find extracted -mindepth 2 -maxdepth 4 -name pubspec.yaml -print -quit | xargs -r dirname)"
+          fi
+          test -n "$PROJECT_DIR" && test -f "$PROJECT_DIR/pubspec.yaml" || {
+            echo "Could not find pubspec.yaml inside project.zip"
+            find extracted -maxdepth 4 -type f | head -80
+            exit 1
+          }
+          mkdir -p app
+          cp -a "$PROJECT_DIR"/. app/
+          echo "PROJECT_DIR=app" >> "$GITHUB_ENV"
+
+      - name: Prepare Android platform files if missing
+        working-directory: app
+        run: |
+          if [ ! -d android ]; then
+            flutter create --platforms=android --org com.farmworld.mobile .
+          fi
+
+      - name: Get dependencies
+        working-directory: app
+        run: flutter pub get
+
+      - name: Analyze project
+        working-directory: app
+        run: flutter analyze --no-pub
+
+      - name: Build Android APK
+        working-directory: app
+        run: flutter build apk --debug
+
+      - name: Upload APK
+        uses: actions/upload-artifact@v4
+        with:
+          name: farm-world-debug-apk
+          path: app/build/app/outputs/flutter-apk/app-debug.apk
+          if-no-files-found: error
+          retention-days: 14
